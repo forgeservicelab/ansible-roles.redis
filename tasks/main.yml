@@ -1,0 +1,86 @@
+---
+# tasks file for redis
+- name: Get build essentials
+  apt:
+    name: build-essential
+    update_cache: yes
+
+- stat:
+    path: /tmp/redis-2.8.19
+  register: redis_install
+
+- name: Get Redis 2.8.19 sources
+  get_url:
+    url: http://download.redis.io/releases/redis-2.8.19.tar.gz
+    dest: /tmp/
+  when: not redis_install.stat.exists
+
+- name: Unpack Redis
+  unarchive:
+    copy: no
+    src: /tmp/redis-2.8.19.tar.gz
+    dest: /tmp/
+  when: not redis_install.stat.exists
+
+- name: Build Redis
+  command: make chdir=/tmp/redis-2.8.19
+  register: build
+  changed_when: build.stdout_lines | length > 6
+
+- name: Tweak Redis configuration to debianize
+  lineinfile:
+    backup: yes
+    backrefs: yes
+    regexp: "{{ item.rgxp }}"
+    line: "{{ item.line }}"
+    dest: /tmp/redis-2.8.19/redis.conf
+  with_items:
+    - rgxp: ^(daemonize)\s
+      line: \1 yes
+    - rgxp: ^(pidfile)\s
+      line: \1 /var/run/redis/redis-server.pid
+    - rgxp: ^(dir)\s
+      line: \1 /var/run/redis/
+  register: config
+
+- name: Ensure Redis configuration directory
+  file:
+    path: /etc/redis
+    state: directory
+
+- name: Copy Redis configuration file
+  command: cp /tmp/redis-2.8.19/redis.conf /etc/redis/redis.conf
+  when: config.changed
+
+- name: Copy Redis executables
+  command: "cp /tmp/redis-2.8.19/src/{{ item }} /usr/local/bin/ creates=/usr/local/bin/{{ item }}"
+  with_items:
+    - redis-benchmark
+    - redis-check-aof
+    - redis-check-dump
+    - redis-cli
+    - redis-sentinel
+    - redis-server
+  when: build.changed
+
+- name: Upload Redis server init script
+  copy:
+    src: redis-server
+    dest: /etc/init.d/redis-server
+    mode: 0755
+
+- name: Upload Redis defaults with ulimit
+  copy:
+    content: ULIMIT=10032
+    dest: /etc/default/redis-server
+
+- name: Create redis user
+  user:
+    name: redis
+    system: yes
+    createhome: no
+
+- name: Enable and start Redis
+  service:
+    name: redis-server
+    state: started
